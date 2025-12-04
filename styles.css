@@ -104,6 +104,19 @@ canvas { display: block; }
     transform: translateY(0);
 }
 
+@media (hover: none) and (pointer: coarse) {
+  .dock-menu { transform: translateY(0); }
+}
+
+@media (max-width: 640px) {
+  .top-bar { padding: 12px; }
+  .bottom-trigger { height: 90px; padding-bottom: 12px; }
+  .dock-item { width: 48px; height: 48px; border-radius: 14px; }
+  .dock-item i { font-size: 20px; }
+  .dock-item span { font-size: 9px; }
+  #cam_preview { width: 120px; height: 90px; }
+}
+
 .dock-item {
     position: relative;
     display: flex;

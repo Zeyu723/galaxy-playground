@@ -18,6 +18,12 @@ let targetPositions = [];
 let targetColors = [];
 let currentShape = 'sun';
 let currentGalaxy = 'solar';
+let targetQuat;
+let lastNormal = null;
+let smoothedQuat;
+let angularMomentum;
+let momentumGain = 1;
+let lastFrameTime = performance.now();
 
 let handExpansion = 0.4;
 let isHandDetected = false;
@@ -26,6 +32,9 @@ let time = 0;
 
 let audioContext, analyser, dataArray;
 let isAudioActive = false;
+
+let lastLandmarks = null;
+
 
 const solarDock = `
   <div class="dock-item active" onclick="changeShape('sun')" data-tooltip="太阳"><i class="fas fa-sun text-yellow-500"></i><span>Sun</span></div>
@@ -132,6 +141,10 @@ function createParticleSystem() {
   });
   particles = new THREE.Points(geometry, material);
   scene.add(particles);
+  particles.rotation.order = 'YXZ';
+  targetQuat = particles.quaternion.clone();
+  smoothedQuat = particles.quaternion.clone();
+  angularMomentum = new THREE.Vector3(0, 0, 0);
   calculateTargetPositions('sun');
 }
 
@@ -837,12 +850,57 @@ function changeShape(shape) {
 function animate() {
   requestAnimationFrame(animate);
   time += 0.01;
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
   if (isHandDetected) {
-    particles.rotation.x += (handRotation.x - particles.rotation.x) * 0.08;
-    particles.rotation.y += (handRotation.y - particles.rotation.y) * 0.08;
-    particles.rotation.z += (handRotation.z - particles.rotation.z) * 0.08;
+    const inv = smoothedQuat.clone().invert();
+    const dq = targetQuat.clone().multiply(inv);
+    const w = THREE.MathUtils.clamp(dq.w, -1, 1);
+    let angle = 2 * Math.acos(w);
+
+
+    const MIN_ANGLE = 0.9 * Math.PI / 180; // 死区过滤噪声
+    // 噪声过滤：小角度直接当作 0
+    // const MIN_ANGLE = 0.004; // 约 1~2 度，可以自己调
+    if (angle < MIN_ANGLE) {
+      angle = 0;
+    }
+
+    const s = Math.sqrt(Math.max(0, 1 - w * w));
+    let axis = new THREE.Vector3();
+    if (s < 1e-5) axis.set(0, 1, 0); else axis.set(dq.x / s, dq.y / s, dq.z / s);
+
+
+    if (angle > Math.PI) { 
+      angle = 2 * Math.PI - angle; 
+      axis.multiplyScalar(-1); 
+    }
+
+  // 比较柔一点的参数
+  const stiffness = 6.0 * momentumGain;  // 先用 2，感觉不够再慢慢加
+  const damping   = 0.93;                // 越接近 1 越丝滑但也更“黏”
+
+    angularMomentum.multiplyScalar(damping);
+    angularMomentum.add(axis.clone().multiplyScalar(angle * stiffness));//不动原始 axis，只用其副本.
+    //axis 不止用于本帧旋转，还用于建立下一帧的旋转参考方向：
+
+    let mag = angularMomentum.length();
+    const step = Math.min(0.12, mag) * dt;
+    const axisN = mag > 1e-6 ? angularMomentum.clone().normalize() : axis;
+    const inc = new THREE.Quaternion().setFromAxisAngle(axisN, step);
+    
+    smoothedQuat.multiply(inc); // ← 用惯性更新 smoothedQuat
+    smoothedQuat.normalize();              // 防止数值漂移
+
+    // 把 slerp 改成非常小的纠偏（或者直接去掉）
+    smoothedQuat.slerp(targetQuat, 0.02);  // 只有 2% 校正
+    particles.quaternion.copy(smoothedQuat);
   } else {
-    particles.rotation.y += 0.001;
+    angularMomentum.multiplyScalar(0.9);
+    const idle = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.001);
+    smoothedQuat.multiply(idle);
+    particles.quaternion.copy(smoothedQuat);
   }
   let audioScale = 1.0;
   if (isAudioActive) {
@@ -964,14 +1022,27 @@ async function generateAIShape() {
 function initMediaPipe() {
   if (typeof Hands === 'undefined') { setTimeout(initMediaPipe, 1000); return; }
   const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
-  hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+  hands.setOptions({ selfieMode: true, maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
   hands.onResults(onResults);
   if (videoElement) {
+    if (!window.isSecureContext) {
+      statusDot.className = "w-2 h-2 rounded-full bg-red-500";
+      statusText.innerText = "请通过本地服务器打开（localhost/https），file 模式无法访问摄像头";
+      return;
+    }
     const cam = new Camera(videoElement, { onFrame: async () => { await hands.send({ image: videoElement }); }, width: 320, height: 240 });
     cam.start().then(() => {
       statusDot.className = "w-2 h-2 rounded-full bg-green-500";
       statusText.innerText = "系统就绪";
-    }).catch(console.error);
+    }).catch((e) => {
+      statusDot.className = "w-2 h-2 rounded-full bg-red-500";
+      const name = (e && e.name) || "";
+      if (name === "NotAllowedError") statusText.innerText = "已拒绝摄像头权限，请在浏览器地址栏允许访问";
+      else if (name === "NotFoundError") statusText.innerText = "未检测到摄像头设备";
+      else if (name === "SecurityError") statusText.innerText = "安全上下文受限，请使用 https 或 localhost";
+      else statusText.innerText = "摄像头启动失败：" + (e && e.message ? e.message : "未知错误");
+      console.error(e);
+    });
   }
 }
 
@@ -979,13 +1050,58 @@ function calculateRotation(lm) {
   const p0 = lm[0], p5 = lm[5], p17 = lm[17];
   const vA = { x: p5.x - p0.x, y: p5.y - p0.y, z: p5.z - p0.z };
   const vB = { x: p5.x - p17.x, y: p5.y - p17.y, z: p5.z - p17.z };
-  const normal = { x: vA.y * vB.z - vA.z * vB.y, y: vA.z * vB.x - vA.x * vB.z, z: vA.x * vB.y - vA.y * vB.x };
+  let normal = { x: vA.y * vB.z - vA.z * vB.y, y: vA.z * vB.x - vA.x * vB.z, z: vA.x * vB.y - vA.y * vB.x };
+  if (lastNormal) {
+    const dot = normal.x * lastNormal.x + normal.y * lastNormal.y + normal.z * lastNormal.z;
+    if (dot < 0) { normal = { x: -normal.x, y: -normal.y, z: -normal.z }; }
+  }
+  lastNormal = normal;
   const yaw = Math.atan2(normal.x, normal.z);
   const pitch = Math.atan2(normal.y, -normal.z);
   const p9 = lm[9];
   const angleRad = Math.atan2(p9.y - p0.y, p9.x - p0.x);
   const roll = angleRad + Math.PI / 2;
   return { yaw: -yaw * 1.5, pitch: (pitch - 0.5) * 1.5, roll: roll };
+}
+
+// --- Improved Gesture Logic with Quaternion ---
+function calculatePalmQuaternion(lm) {
+    // Invert X for mirrored webcam
+    const v0 = new THREE.Vector3(-lm[0].x, lm[0].y, lm[0].z);
+    const v5 = new THREE.Vector3(-lm[5].x, lm[5].y, lm[5].z);
+    const v17 = new THREE.Vector3(-lm[17].x, lm[17].y, lm[17].z);
+    
+    // xAxis: Pinky to Index (Side)
+    let xAxis = new THREE.Vector3().subVectors(v5, v17).normalize();
+    // zAxis: Normal of palm (Up x Side approx) -> Actually (Index-Wrist) x (Pinky-Wrist)
+    let zAxis = new THREE.Vector3().crossVectors(new THREE.Vector3().subVectors(v5, v0), new THREE.Vector3().subVectors(v17, v0)).normalize();
+    
+    // Stabilize zAxis flipping
+    if (lastNormal) {
+        if (zAxis.dot(lastNormal) < 0) { zAxis.negate(); xAxis.negate(); } // Flip if suddenly inverted
+    }
+    lastNormal = zAxis.clone();
+
+    const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+    const m = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+    return new THREE.Quaternion().setFromRotationMatrix(m);
+}
+
+
+function smoothLandmarks(lm) {
+  if (!lastLandmarks) {
+    // 第一次直接拷贝
+    lastLandmarks = lm.map(p => ({ x: p.x, y: p.y, z: p.z }));
+    return lm;
+  }
+  const alpha = 0.2; // 越小越平滑，0.2～0.5 之间自己试
+  for (let i = 0; i < lm.length; i++) {
+    lm[i].x = alpha * lm[i].x + (1 - alpha) * lastLandmarks[i].x;
+    lm[i].y = alpha * lm[i].y + (1 - alpha) * lastLandmarks[i].y;
+    lm[i].z = alpha * lm[i].z + (1 - alpha) * lastLandmarks[i].z;
+  }
+  lastLandmarks = lm.map(p => ({ x: p.x, y: p.y, z: p.z }));
+  return lm;
 }
 
 function onResults(results) {
@@ -996,9 +1112,13 @@ function onResults(results) {
   if (results.multiHandLandmarks.length > 0) {
     isHandDetected = true;
     if (results.multiHandLandmarks.length === 1) {
-      const lm = results.multiHandLandmarks[0];
-      const rot = calculateRotation(lm);
-      handRotation.x = rot.yaw; handRotation.y = rot.pitch; handRotation.z = rot.roll;
+      // const lm = results.multiHandLandmarks[0];
+
+      let lm = results.multiHandLandmarks[0];
+      lm = smoothLandmarks(lm);  // 先平滑，再算四元数
+      const q = calculatePalmQuaternion(lm);
+      targetQuat.copy(q);
+      momentumGain = 1;
       const thumb = lm[4], index = lm[8];
       const dist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
       const palmSize = Math.sqrt(Math.pow(lm[0].x - lm[9].x, 2) + Math.pow(lm[0].y - lm[9].y, 2));
@@ -1008,10 +1128,12 @@ function onResults(results) {
       const h1 = results.multiHandLandmarks[0], h2 = results.multiHandLandmarks[1];
       const dist = Math.sqrt(Math.pow(h1[0].x - h2[0].x, 2) + Math.pow(h1[0].y - h2[0].y, 2));
       handExpansion += ((dist * 2 - 0.2) - handExpansion) * 0.1;
-      const r1 = calculateRotation(h1), r2 = calculateRotation(h2);
-      handRotation.x = (r1.yaw + r2.yaw) / 2;
-      handRotation.y = (r1.pitch + r2.pitch) / 2;
-      handRotation.z = (r1.roll + r2.roll) / 2;
+      const q1 = calculatePalmQuaternion(h1);
+      const q2 = calculatePalmQuaternion(h2);
+      const qm = q1.clone();
+      qm.slerp(q2, 0.5);
+      targetQuat.copy(qm);
+      momentumGain = 0.6;
     }
   } else isHandDetected = false;
   ctx.restore();
