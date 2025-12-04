@@ -11,7 +11,7 @@ const CONFIG = {
   cameraZ: 100,
 };
 
-const apiKey = "";
+const apiKey = "AIzaSyDJOccKGi3xb0ECbb3-39iiqJGC05ugPBg";
 
 let scene, camera, renderer, particles, geometry, material;
 let targetPositions = [];
