@@ -14,7 +14,7 @@ const CONFIG = {
 
 const PINCH_T = 0.25;
 
-const apiKey = "";
+// 秘钥不在前端保存；改为通过后端代理调用
 
 let scene, camera, renderer, particles, geometry, material;
 let targetPositions = [];
@@ -1032,30 +1032,134 @@ function enableAudio() {
 
 function toggleAIModal() { document.getElementById('ai-modal').classList.toggle('hidden'); }
 
+// --- AI 生成核心函数 (请复制并替换原有的 generateAIShape) ---
 async function generateAIShape() {
-  const prompt = document.getElementById('ai-prompt').value.trim();
-  if (!prompt) return;
-  document.getElementById('btn-generate').innerText = "...";
-  try {
-    const systemPrompt = "You are an expert Three.js creative coder. Write ONLY the inner JavaScript loop body to set particle coordinates (x,y,z). Loop variable 'i' from 0 to 'particleCount'. Use 'targetPositions' array.";
-    const userQuery = `Create shape: ${prompt}. Scale ~30. Return JS code only.`;
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: userQuery }] }], systemInstruction: { parts: [{ text: systemPrompt }] } })
-    });
-    const data = await response.json();
-    let code = data.candidates[0].content.parts[0].text.replace(/```javascript/g, '').replace(/```/g, '').trim();
-    const loopFunction = new Function('particleCount', 'targetPositions', `for(let i=0; i<particleCount; i++){ ${code} }`);
-    targetPositions = new Float32Array(CONFIG.particleCount * 3);
-    targetColors = new Float32Array(CONFIG.particleCount * 3);
-    for (let i = 0; i < CONFIG.particleCount * 3; i++) targetColors[i] = 1;
-    loopFunction(CONFIG.particleCount, targetPositions);
-    currentShape = 'ai-generated';
-    geometry.attributes.color.needsUpdate = true;
-    document.querySelectorAll('.dock-item').forEach(b => b.classList.remove('active'));
-    toggleAIModal();
-  } catch (e) { console.error(e); }
-  document.getElementById('btn-generate').innerText = "生成";
+    const promptInput = document.getElementById('ai-prompt');
+    const prompt = promptInput.value.trim();
+    const btn = document.getElementById('btn-generate');
+    const errorEl = document.getElementById('ai-error');
+    
+    if (!prompt) return;
+
+    // 1. UI 状态更新
+    const originalText = btn.innerText;
+    btn.innerText = "正在联络宇宙...";
+    btn.disabled = true;
+    if (errorEl) errorEl.classList.add('hidden');
+
+    try {
+        // 2. 请求本地后端 (不再直接请求 Google)
+        // 注意：确保你的 server.js 正在 localhost:3000 上运行
+        const response = await fetch('http://localhost:3000/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: prompt })
+        });
+
+        if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || 'Server connection failed');
+        }
+
+        const data = await response.json();
+        const code = data.code;
+
+        if (!code) throw new Error("AI 返回了空指令");
+
+        console.log("AI Code Received:", code); // 调试用
+
+        // 3. 构造执行函数
+        // 注入数学函数，让 AI 生成的代码更简洁易跑
+        const loopFunction = new Function('particleCount', 'targetPositions', 'targetColors', 'time', 
+            `
+            const sin = Math.sin; const cos = Math.cos; const tan = Math.tan; const PI = Math.PI;
+            const random = Math.random; const sqrt = Math.sqrt; const pow = Math.pow; const abs = Math.abs;
+            
+            for(let i=0; i<particleCount; i++){ 
+                ${code} 
+            }
+            `
+        );
+        
+        // 4. 准备数据容器
+        targetPositions = new Float32Array(CONFIG.particleCount * 3);
+        targetColors = new Float32Array(CONFIG.particleCount * 3);
+        
+        // 初始化默认颜色 (白色)，防止 AI 没写颜色代码导致全黑
+        for(let i=0; i<CONFIG.particleCount*3; i++) targetColors[i] = 1.0;
+
+        // 5. 执行 AI 代码计算坐标
+        loopFunction(CONFIG.particleCount, targetPositions, targetColors, time);
+        
+        // 6. 智能上色 (如果 AI 代码里没有涉及到 targetColors)
+        if (!code.includes('targetColors')) {
+            const colorizer = buildPromptColorizer(prompt);
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                const x = targetPositions[i*3], y = targetPositions[i*3+1], z = targetPositions[i*3+2];
+                const r = Math.sqrt(x*x + y*y + z*z);
+                const col = colorizer(x, y, z, r);
+                targetColors[i*3] = col[0];
+                targetColors[i*3+1] = col[1];
+                targetColors[i*3+2] = col[2];
+            }
+        }
+        
+        // 7. 应用结果并更新状态
+        currentShape = 'ai-generated';
+        geometry.attributes.color.needsUpdate = true;
+        
+        // 关闭 UI 并重置导航状态
+        document.querySelectorAll('.dock-item').forEach(b => b.classList.remove('active'));
+        toggleAIModal();
+        
+        // 顶部提示
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        if(statusText) statusText.innerText = "AI 创造完成";
+        if(statusDot) statusDot.className = "w-2 h-2 rounded-full bg-purple-500 animate-pulse";
+
+    } catch (e) { 
+        console.error("生成出错:", e); 
+        if (errorEl) {
+            errorEl.innerText = `生成失败: ${e.message}`;
+            errorEl.classList.remove('hidden');
+        }
+    } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }
+}
+
+// --- 辅助函数：根据提示词关键词生成配色方案 (请把这个也复制进去) ---
+function buildPromptColorizer(p) {
+    const s = (p || "").toLowerCase();
+    const has = (kw) => s.indexOf(kw) >= 0;
+    const c = {
+        blue: [0.2, 0.6, 1.0], purple: [0.7, 0.3, 1.0], amber: [1.0, 0.7, 0.2],
+        gold: [1.0, 0.9, 0.5], red: [1.0, 0.2, 0.2], green: [0.2, 0.9, 0.5],
+        pink: [1.0, 0.5, 0.8], cyan: [0.2, 1.0, 1.0], white: [1.0, 1.0, 1.0]
+    };
+    
+    // 确定主色调
+    let base = c.white;
+    if (has("火") || has("red") || has("sun") || has("fire")) base = c.red;
+    else if (has("水") || has("water") || has("ice") || has("blue") || has("sea")) base = c.blue;
+    else if (has("草") || has("nature") || has("green") || has("forest")) base = c.green;
+    else if (has("紫") || has("purple") || has("magic") || has("void")) base = c.purple;
+    else if (has("金") || has("gold") || has("star")) base = c.gold;
+    else if (has("粉") || has("pink") || has("love") || has("rose")) base = c.pink;
+    
+    const secondary = (has("暗") || has("dark") || has("black")) ? [0.1, 0.1, 0.2] : c.cyan;
+
+    return (x,y,z,r) => {
+        // 根据距离中心的远近进行颜色渐变
+        const t = Math.min(1, r / 40); 
+        return [
+            base[0] * (1-t) + secondary[0] * t,
+            base[1] * (1-t) + secondary[1] * t,
+            base[2] * (1-t) + secondary[2] * t
+        ];
+    };
 }
 
 function initMediaPipe() {
