@@ -11,6 +11,8 @@ const CONFIG = {
   cameraZ: 100,
 };
 
+const PINCH_T = 0.25;
+
 const apiKey = "";
 
 let scene, camera, renderer, particles, geometry, material;
@@ -32,6 +34,9 @@ let time = 0;
 
 let audioContext, analyser, dataArray;
 let isAudioActive = false;
+let scaleLocked = false;
+let lockedExpansion = 0.4;
+let controllingHand = 0;
 
 let lastLandmarks = null;
 
@@ -903,7 +908,7 @@ function animate() {
     particles.quaternion.copy(smoothedQuat);
   }
   let audioScale = 1.0;
-  if (isAudioActive) {
+  if (isAudioActive && !scaleLocked) {
     analyser.getByteFrequencyData(dataArray);
     let sum = 0;
     for (let j = 0; j < dataArray.length; j++) sum += dataArray[j];
@@ -1087,6 +1092,14 @@ function calculatePalmQuaternion(lm) {
     return new THREE.Quaternion().setFromRotationMatrix(m);
 }
 
+function getPinchOpen(lm) {
+  const thumb = lm[4], index = lm[8];
+  const dist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
+  const palmSize = Math.sqrt(Math.pow(lm[0].x - lm[9].x, 2) + Math.pow(lm[0].y - lm[9].y, 2));
+  const open = (dist / Math.max(palmSize, 0.01) - 0.2) * 0.8;
+  return { open, palmSize };
+}
+
 
 function smoothLandmarks(lm) {
   if (!lastLandmarks) {
@@ -1126,14 +1139,30 @@ function onResults(results) {
       handExpansion += (Math.max(0, Math.min(1.5, open + (Math.max(palmSize, 0.01) - 0.15) * 3)) - handExpansion) * 0.1;
     } else {
       const h1 = results.multiHandLandmarks[0], h2 = results.multiHandLandmarks[1];
-      const dist = Math.sqrt(Math.pow(h1[0].x - h2[0].x, 2) + Math.pow(h1[0].y - h2[0].y, 2));
-      handExpansion += ((dist * 2 - 0.2) - handExpansion) * 0.1;
-      const q1 = calculatePalmQuaternion(h1);
-      const q2 = calculatePalmQuaternion(h2);
-      const qm = q1.clone();
-      qm.slerp(q2, 0.5);
-      targetQuat.copy(qm);
-      momentumGain = 0.6;
+      const o1 = getPinchOpen(h1);
+      const o2 = getPinchOpen(h2);
+      const p1 = o1.open < PINCH_T;
+      const p2 = o2.open < PINCH_T;
+      if (p1 ^ p2) {
+        if (!scaleLocked) lockedExpansion = handExpansion;
+        scaleLocked = true;
+        handExpansion = lockedExpansion;
+        controllingHand = p1 ? 1 : 0;
+        const ctrl = controllingHand === 0 ? h1 : h2;
+        const qc = calculatePalmQuaternion(ctrl);
+        targetQuat.copy(qc);
+        momentumGain = 1;
+      } else {
+        scaleLocked = false;
+        const dist = Math.sqrt(Math.pow(h1[0].x - h2[0].x, 2) + Math.pow(h1[0].y - h2[0].y, 2));
+        handExpansion += ((dist * 2 - 0.2) - handExpansion) * 0.1;
+        const q1 = calculatePalmQuaternion(h1);
+        const q2 = calculatePalmQuaternion(h2);
+        const qm = q1.clone();
+        qm.slerp(q2, 0.5);
+        targetQuat.copy(qm);
+        momentumGain = 0.6;
+      }
     }
   } else isHandDetected = false;
   ctx.restore();
