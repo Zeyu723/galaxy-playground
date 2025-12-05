@@ -1050,7 +1050,7 @@ async function generateAIShape() {
     try {
         // 2. 请求本地后端 (不再直接请求 Google)
         // 注意：确保你的 server.js 正在 localhost:3000 上运行
-        const response = await fetch('http://localhost:3000/api/generate', {
+        const response = await fetch('/api/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: prompt })
