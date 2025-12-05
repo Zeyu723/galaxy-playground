@@ -4,6 +4,7 @@ const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const dockContainer = document.getElementById('dock-container');
 const appTitle = document.getElementById('app-title');
+const gestureHintEl = document.getElementById('gesture-hint');
 
 const CONFIG = {
   particleCount: 65000,
@@ -37,6 +38,39 @@ let isAudioActive = false;
 let scaleLocked = false;
 let lockedExpansion = 0.4;
 let controllingHand = 0;
+let lastGestureMode = "";
+let camVisible = true;
+
+function updateGestureHint(mode) {
+  if (!gestureHintEl) return;
+  if (mode === lastGestureMode) return;
+  lastGestureMode = mode;
+  let html = "";
+  if (mode === "none") {
+    html = `<div><i class="fas fa-eye-slash mr-1 text-gray-400"></i> 未检测到手</div>`;
+  } else if (mode === "single") {
+    html = `<div><i class="fas fa-sync mr-1 text-white"></i> 单手旋转</div>`;
+  } else if (mode === "locked-rotate") {
+    html = `<div><i class="fas fa-hand-rock mr-1 text-purple-400"></i> 捏合锁定</div><div><i class="fas fa-sync mr-1 text-white"></i> 另一手旋转</div>`;
+  } else {
+    html = `<div><i class="fas fa-arrows-alt-h mr-1 text-blue-400"></i> 双手距离控制缩放</div><div><i class="fas fa-hand-rock mr-1 text-purple-400"></i> 捏合锁定 | <i class="fas fa-sync mr-1"></i> 单手旋转</div>`;
+  }
+  gestureHintEl.innerHTML = html;
+}
+
+function toggleCamPreview() {
+  camVisible = !camVisible;
+  if (!canvasElement) return;
+  if (camVisible) {
+    canvasElement.classList.remove('cam-hidden');
+    const icon = document.querySelector('#btn-toggle-cam i');
+    if (icon) icon.className = 'fas fa-chevron-up';
+  } else {
+    canvasElement.classList.add('cam-hidden');
+    const icon = document.querySelector('#btn-toggle-cam i');
+    if (icon) icon.className = 'fas fa-chevron-down';
+  }
+}
 
 let lastLandmarks = null;
 
@@ -1132,6 +1166,7 @@ function onResults(results) {
       const q = calculatePalmQuaternion(lm);
       targetQuat.copy(q);
       momentumGain = 1;
+      updateGestureHint("single");
       const thumb = lm[4], index = lm[8];
       const dist = Math.sqrt(Math.pow(thumb.x - index.x, 2) + Math.pow(thumb.y - index.y, 2));
       const palmSize = Math.sqrt(Math.pow(lm[0].x - lm[9].x, 2) + Math.pow(lm[0].y - lm[9].y, 2));
@@ -1152,6 +1187,7 @@ function onResults(results) {
         const qc = calculatePalmQuaternion(ctrl);
         targetQuat.copy(qc);
         momentumGain = 1;
+        updateGestureHint("locked-rotate");
       } else {
         scaleLocked = false;
         const dist = Math.sqrt(Math.pow(h1[0].x - h2[0].x, 2) + Math.pow(h1[0].y - h2[0].y, 2));
@@ -1162,9 +1198,13 @@ function onResults(results) {
         qm.slerp(q2, 0.5);
         targetQuat.copy(qm);
         momentumGain = 0.6;
+        updateGestureHint("dual-scale");
       }
     }
-  } else isHandDetected = false;
+  } else {
+    isHandDetected = false;
+    updateGestureHint("none");
+  }
   ctx.restore();
 }
 

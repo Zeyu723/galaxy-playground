@@ -50,7 +50,7 @@
                     <span id="status-dot" class="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
                     <span id="status-text">系统初始化...</span>
                 </p>
-                <div class="text-gray-300/60 text-[10px] mt-2 font-mono leading-relaxed bg-black/40 p-2 rounded border border-white/5 inline-block backdrop-blur-md">
+                <div id="gesture-hint" class="text-gray-300/60 text-[10px] mt-2 font-mono leading-relaxed bg-black/40 p-2 rounded border border-white/5 inline-block backdrop-blur-md">
                     <div><i class="fas fa-arrows-alt-h mr-1 text-blue-400"></i> 双手距离控制缩放</div>
                     <div><i class="fas fa-hand-rock mr-1 text-purple-400"></i> 捏合锁定 | <i class="fas fa-sync mr-1"></i> 单手旋转</div>
                 </div>
@@ -58,9 +58,15 @@
             
             <div class="relative group top-bar-content">
                 <canvas id="cam_preview" width="160" height="120" class="glass-panel"></canvas>
-                <div class="absolute inset-0 flex items-center justify-center bg-black/60 text-white text-xs rounded-xl opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm">
+                <div class="absolute inset-0 flex items-center justify-center bg-black/60 text-white text-xs rounded-xl opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm pointer-events-none">
                     AI 视觉核心
                 </div>
+            </div>
+            <div class="fixed top-3 right-3 z-50 pointer-events-auto">
+                <button id="btn-toggle-cam" onclick="toggleCamPreview()" aria-label="切换摄像头预览"
+                    class="bg-transparent text-white/90 hover:text-white p-2 rounded-full">
+                    <i class="fas fa-chevron-up"></i>
+                </button>
             </div>
         </div>
 
